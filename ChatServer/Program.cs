@@ -28,7 +28,17 @@ namespace ChatServer
         Heartbeat,
         PrivateMessage,
         RoomJoin,
-        ConnectionRejected
+        ConnectionRejected,
+        FileTransferRequest,
+        FileTransferChunk,
+        FileTransferResume,
+        FileTransferCancel,
+        RoomFileUploadRequest,
+        RoomFileUploadResume,
+        RoomFileUploadChunk,
+        RoomFileList,
+        RoomFileDownloadRequest,
+        RoomFileDownloadChunk
     }
 
     public class Packet
@@ -67,6 +77,101 @@ namespace ChatServer
     public class UserListUpdateData { public List<string> Users { get; set; } = new(); }
     public class SystemMessageData { public string Message { get; set; } = string.Empty; }
     public class HeartbeatData { }
+
+    public class FileTransferRequestData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public string Sender { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public long FileSize { get; set; }
+    }
+
+    public class FileTransferChunkData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public string Sender { get; set; } = string.Empty;
+        public string Recipient { get; set; } = string.Empty;
+        public long Offset { get; set; }
+        public string DataBase64 { get; set; } = string.Empty;
+        public bool IsLast { get; set; }
+    }
+
+    public class FileTransferResumeData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public string Sender { get; set; } = string.Empty;
+        public string Recipient { get; set; } = string.Empty;
+        public long ReceivedBytes { get; set; }
+    }
+
+    public class FileTransferCancelData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public string Sender { get; set; } = string.Empty;
+        public string Recipient { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+    }
+
+    public class RoomFileDescriptor
+    {
+        public string FileId { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public long FileSize { get; set; }
+        public string UploadedBy { get; set; } = string.Empty;
+        public string UploadedAt { get; set; } = string.Empty;
+    }
+
+    public class RoomFileListData
+    {
+        public string RoomId { get; set; } = string.Empty;
+        public List<RoomFileDescriptor> Files { get; set; } = new();
+    }
+
+    public class RoomFileUploadRequestData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public string Sender { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public long FileSize { get; set; }
+    }
+
+    public class RoomFileUploadResumeData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public long ReceivedBytes { get; set; }
+    }
+
+    public class RoomFileUploadChunkData
+    {
+        public string TransferId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public long Offset { get; set; }
+        public string DataBase64 { get; set; } = string.Empty;
+        public bool IsLast { get; set; }
+    }
+
+    public class RoomFileDownloadRequestData
+    {
+        public string FileId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public long Offset { get; set; }
+    }
+
+    public class RoomFileDownloadChunkData
+    {
+        public string FileId { get; set; } = string.Empty;
+        public string RoomId { get; set; } = string.Empty;
+        public long Offset { get; set; }
+        public string DataBase64 { get; set; } = string.Empty;
+        public bool IsLast { get; set; }
+        public RoomFileDescriptor Descriptor { get; set; } = new();
+    }
 
 
     // ==========================================
@@ -331,13 +436,116 @@ namespace ChatServer
     // ==========================================
     // 4. MESSAGE ROUTER
     // ==========================================
+    public class RoomFileStore
+    {
+        private readonly object _syncRoot = new();
+        private readonly string _rootPath;
+        private readonly Dictionary<string, List<RoomFileDescriptor>> _roomFiles = new(StringComparer.OrdinalIgnoreCase);
+
+        public RoomFileStore(string rootPath)
+        {
+            _rootPath = rootPath;
+        }
+
+        public string GetRoomPath(string roomId)
+        {
+            return Path.Combine(_rootPath, SanitizeRoomId(roomId));
+        }
+
+        public List<RoomFileDescriptor> GetRoomFiles(string roomId)
+        {
+            lock (_syncRoot)
+            {
+                return new List<RoomFileDescriptor>(GetRoomFilesLocked(roomId));
+            }
+        }
+
+        public RoomFileDescriptor? GetRoomFile(string roomId, string fileId)
+        {
+            lock (_syncRoot)
+            {
+                var files = GetRoomFilesLocked(roomId);
+                return files.FirstOrDefault(f => f.FileId.Equals(fileId, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        public void AddRoomFile(string roomId, RoomFileDescriptor descriptor)
+        {
+            lock (_syncRoot)
+            {
+                var files = GetRoomFilesLocked(roomId);
+                files.RemoveAll(f => f.FileId.Equals(descriptor.FileId, StringComparison.OrdinalIgnoreCase));
+                files.Insert(0, descriptor);
+                SaveRoomIndexLocked(roomId, files);
+            }
+        }
+
+        private List<RoomFileDescriptor> GetRoomFilesLocked(string roomId)
+        {
+            if (_roomFiles.TryGetValue(roomId, out var files)) return files;
+
+            var loaded = LoadRoomIndexLocked(roomId);
+            _roomFiles[roomId] = loaded;
+            return loaded;
+        }
+
+        private List<RoomFileDescriptor> LoadRoomIndexLocked(string roomId)
+        {
+            var roomPath = GetRoomPath(roomId);
+            var indexPath = Path.Combine(roomPath, "room-index.json");
+            if (!File.Exists(indexPath)) return new List<RoomFileDescriptor>();
+
+            try
+            {
+                var json = File.ReadAllText(indexPath);
+                return JsonSerializer.Deserialize<List<RoomFileDescriptor>>(json) ?? new List<RoomFileDescriptor>();
+            }
+            catch
+            {
+                return new List<RoomFileDescriptor>();
+            }
+        }
+
+        private void SaveRoomIndexLocked(string roomId, List<RoomFileDescriptor> files)
+        {
+            var roomPath = GetRoomPath(roomId);
+            Directory.CreateDirectory(roomPath);
+            var indexPath = Path.Combine(roomPath, "room-index.json");
+            var json = JsonSerializer.Serialize(files, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(indexPath, json);
+        }
+
+        private static string SanitizeRoomId(string roomId)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var clean = new string(roomId.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+            return string.IsNullOrWhiteSpace(clean) ? "General" : clean;
+        }
+    }
+
+    public class RoomFileUploadSession
+    {
+        public string TransferId { get; init; } = string.Empty;
+        public string RoomId { get; init; } = string.Empty;
+        public string Sender { get; init; } = string.Empty;
+        public string FileName { get; init; } = string.Empty;
+        public long FileSize { get; init; }
+        public string TempPath { get; init; } = string.Empty;
+        public long ReceivedBytes { get; set; }
+        public object SyncRoot { get; } = new();
+    }
+
     public class MessageRouter
     {
         private readonly ConnectedClients _clients;
+        private readonly RoomFileStore _roomFiles;
+        private readonly Dictionary<string, RoomFileUploadSession> _uploadSessions = new(StringComparer.OrdinalIgnoreCase);
+        private const int FileChunkSize = 64 * 1024;
 
-        public MessageRouter(ConnectedClients clients)
+        public MessageRouter(ConnectedClients clients, RoomFileStore roomFiles)
         {
             _clients = clients;
+            _roomFiles = roomFiles;
         }
 
         public async Task RouteAsync(ClientSession session, string jsonPayload)
@@ -456,6 +664,8 @@ namespace ChatServer
                                 Type = PacketType.SystemMessage,
                                 Data = JsonSerializer.SerializeToElement(new SystemMessageData { Message = $"You joined room: {roomJoinData.RoomId}" })
                             });
+
+                            await SendRoomFileListAsync(session, roomJoinData.RoomId);
                         }
                         break;
 
@@ -485,6 +695,169 @@ namespace ChatServer
                         });
                         break;
 
+                    case PacketType.FileTransferRequest:
+                        var requestData = packet.Data.Deserialize<FileTransferRequestData>();
+                        if (requestData != null)
+                        {
+                            var roomId = string.IsNullOrWhiteSpace(requestData.RoomId) ? "General" : requestData.RoomId;
+                            var forwardPacket = new Packet
+                            {
+                                Type = PacketType.FileTransferRequest,
+                                Data = JsonSerializer.SerializeToElement(new FileTransferRequestData
+                                {
+                                    TransferId = requestData.TransferId,
+                                    RoomId = roomId,
+                                    Sender = session.Username,
+                                    FileName = requestData.FileName,
+                                    FileSize = requestData.FileSize
+                                })
+                            };
+
+                            if (roomId.Equals("General", StringComparison.OrdinalIgnoreCase))
+                            {
+                                await _clients.BroadcastAsync(forwardPacket, excludeSessionId: null);
+                            }
+                            else
+                            {
+                                await _clients.BroadcastToRoomAsync(roomId, forwardPacket, excludeSessionId: null);
+                            }
+                        }
+                        break;
+
+                    case PacketType.FileTransferResume:
+                        var resumeData = packet.Data.Deserialize<FileTransferResumeData>();
+                        if (resumeData != null)
+                        {
+                            var senderSession = _clients.GetByUsername(resumeData.Sender);
+                            if (senderSession != null)
+                            {
+                                await senderSession.SendPacketAsync(new Packet
+                                {
+                                    Type = PacketType.FileTransferResume,
+                                    Data = JsonSerializer.SerializeToElement(new FileTransferResumeData
+                                    {
+                                        TransferId = resumeData.TransferId,
+                                        RoomId = resumeData.RoomId,
+                                        Sender = resumeData.Sender,
+                                        Recipient = session.Username,
+                                        ReceivedBytes = resumeData.ReceivedBytes
+                                    })
+                                });
+                            }
+                        }
+                        break;
+
+                    case PacketType.FileTransferChunk:
+                        var chunkData = packet.Data.Deserialize<FileTransferChunkData>();
+                        if (chunkData != null)
+                        {
+                            var roomId = string.IsNullOrWhiteSpace(chunkData.RoomId) ? "General" : chunkData.RoomId;
+                            var forwardChunk = new Packet
+                            {
+                                Type = PacketType.FileTransferChunk,
+                                Data = JsonSerializer.SerializeToElement(new FileTransferChunkData
+                                {
+                                    TransferId = chunkData.TransferId,
+                                    RoomId = roomId,
+                                    Sender = session.Username,
+                                    Recipient = chunkData.Recipient,
+                                    Offset = chunkData.Offset,
+                                    DataBase64 = chunkData.DataBase64,
+                                    IsLast = chunkData.IsLast
+                                })
+                            };
+
+                            if (!string.IsNullOrWhiteSpace(chunkData.Recipient))
+                            {
+                                var recipientSession = _clients.GetByUsername(chunkData.Recipient);
+                                if (recipientSession != null)
+                                {
+                                    await recipientSession.SendPacketAsync(forwardChunk);
+                                }
+                            }
+                            else if (roomId.Equals("General", StringComparison.OrdinalIgnoreCase))
+                            {
+                                await _clients.BroadcastAsync(forwardChunk, excludeSessionId: session.SessionId);
+                            }
+                            else
+                            {
+                                await _clients.BroadcastToRoomAsync(roomId, forwardChunk, excludeSessionId: session.SessionId);
+                            }
+                        }
+                        break;
+
+                    case PacketType.FileTransferCancel:
+                        var cancelData = packet.Data.Deserialize<FileTransferCancelData>();
+                        if (cancelData != null)
+                        {
+                            var roomId = string.IsNullOrWhiteSpace(cancelData.RoomId) ? "General" : cancelData.RoomId;
+
+                            if (!string.IsNullOrWhiteSpace(cancelData.Sender) &&
+                                !cancelData.Sender.Equals(session.Username, StringComparison.OrdinalIgnoreCase))
+                            {
+                                var senderSession = _clients.GetByUsername(cancelData.Sender);
+                                if (senderSession != null)
+                                {
+                                    await senderSession.SendPacketAsync(new Packet
+                                    {
+                                        Type = PacketType.FileTransferCancel,
+                                        Data = JsonSerializer.SerializeToElement(new FileTransferCancelData
+                                        {
+                                            TransferId = cancelData.TransferId,
+                                            RoomId = roomId,
+                                            Sender = cancelData.Sender,
+                                            Recipient = session.Username,
+                                            Reason = cancelData.Reason
+                                        })
+                                    });
+                                }
+
+                                break;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(cancelData.Recipient))
+                            {
+                                var recipientSession = _clients.GetByUsername(cancelData.Recipient);
+                                if (recipientSession != null)
+                                {
+                                    await recipientSession.SendPacketAsync(packet);
+                                }
+                            }
+                            else if (roomId.Equals("General", StringComparison.OrdinalIgnoreCase))
+                            {
+                                await _clients.BroadcastAsync(packet, excludeSessionId: session.SessionId);
+                            }
+                            else
+                            {
+                                await _clients.BroadcastToRoomAsync(roomId, packet, excludeSessionId: session.SessionId);
+                            }
+                        }
+                        break;
+
+                    case PacketType.RoomFileUploadRequest:
+                        var uploadRequest = packet.Data.Deserialize<RoomFileUploadRequestData>();
+                        if (uploadRequest != null)
+                        {
+                            await HandleRoomFileUploadRequestAsync(session, uploadRequest);
+                        }
+                        break;
+
+                    case PacketType.RoomFileUploadChunk:
+                        var uploadChunk = packet.Data.Deserialize<RoomFileUploadChunkData>();
+                        if (uploadChunk != null)
+                        {
+                            await HandleRoomFileUploadChunkAsync(session, uploadChunk);
+                        }
+                        break;
+
+                    case PacketType.RoomFileDownloadRequest:
+                        var downloadRequest = packet.Data.Deserialize<RoomFileDownloadRequestData>();
+                        if (downloadRequest != null)
+                        {
+                            await HandleRoomFileDownloadRequestAsync(session, downloadRequest);
+                        }
+                        break;
+
                     default:
                         LogWarning($"[!] Unhandled packet type received: {packet.Type}");
                         break;
@@ -497,6 +870,207 @@ namespace ChatServer
             catch (Exception ex)
             {
                 LogError($"[ERROR] Unexpected error routing packet: {ex.Message}");
+            }
+        }
+
+        private async Task SendRoomFileListAsync(ClientSession session, string roomId)
+        {
+            var normalizedRoomId = string.IsNullOrWhiteSpace(roomId) ? "General" : roomId;
+            var files = _roomFiles.GetRoomFiles(normalizedRoomId);
+
+            await session.SendPacketAsync(new Packet
+            {
+                Type = PacketType.RoomFileList,
+                Data = JsonSerializer.SerializeToElement(new RoomFileListData
+                {
+                    RoomId = normalizedRoomId,
+                    Files = files
+                })
+            });
+        }
+
+        private async Task BroadcastRoomFileListAsync(string roomId)
+        {
+            var normalizedRoomId = string.IsNullOrWhiteSpace(roomId) ? "General" : roomId;
+            var files = _roomFiles.GetRoomFiles(normalizedRoomId);
+
+            await _clients.BroadcastToRoomAsync(normalizedRoomId, new Packet
+            {
+                Type = PacketType.RoomFileList,
+                Data = JsonSerializer.SerializeToElement(new RoomFileListData
+                {
+                    RoomId = normalizedRoomId,
+                    Files = files
+                })
+            });
+        }
+
+        private async Task HandleRoomFileUploadRequestAsync(ClientSession session, RoomFileUploadRequestData request)
+        {
+            var roomId = string.IsNullOrWhiteSpace(request.RoomId) ? "General" : request.RoomId;
+            var roomPath = _roomFiles.GetRoomPath(roomId);
+            Directory.CreateDirectory(roomPath);
+
+            var safeFileName = Path.GetFileName(request.FileName);
+            var tempPath = Path.Combine(roomPath, $"{request.TransferId}_{safeFileName}.part");
+            long existingBytes = 0;
+            if (File.Exists(tempPath))
+            {
+                existingBytes = new FileInfo(tempPath).Length;
+            }
+
+            var uploadSession = new RoomFileUploadSession
+            {
+                TransferId = request.TransferId,
+                RoomId = roomId,
+                Sender = session.Username,
+                FileName = safeFileName,
+                FileSize = request.FileSize,
+                TempPath = tempPath,
+                ReceivedBytes = existingBytes
+            };
+
+            lock (_uploadSessions)
+            {
+                _uploadSessions[request.TransferId] = uploadSession;
+            }
+
+            await session.SendPacketAsync(new Packet
+            {
+                Type = PacketType.RoomFileUploadResume,
+                Data = JsonSerializer.SerializeToElement(new RoomFileUploadResumeData
+                {
+                    TransferId = request.TransferId,
+                    RoomId = roomId,
+                    ReceivedBytes = existingBytes
+                })
+            });
+        }
+
+        private async Task HandleRoomFileUploadChunkAsync(ClientSession session, RoomFileUploadChunkData chunk)
+        {
+            RoomFileUploadSession? uploadSession;
+            lock (_uploadSessions)
+            {
+                _uploadSessions.TryGetValue(chunk.TransferId, out uploadSession);
+            }
+
+            if (uploadSession == null) return;
+
+            byte[] payload;
+            try
+            {
+                payload = Convert.FromBase64String(chunk.DataBase64);
+            }
+            catch
+            {
+                return;
+            }
+
+            bool completed = false;
+            long receivedBytes;
+
+            lock (uploadSession.SyncRoot)
+            {
+                if (chunk.Offset < uploadSession.ReceivedBytes)
+                {
+                    return;
+                }
+
+                if (chunk.Offset > uploadSession.ReceivedBytes)
+                {
+                    return;
+                }
+
+                using var stream = new FileStream(uploadSession.TempPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+                stream.Seek(uploadSession.ReceivedBytes, SeekOrigin.Begin);
+                stream.Write(payload, 0, payload.Length);
+                uploadSession.ReceivedBytes += payload.Length;
+                receivedBytes = uploadSession.ReceivedBytes;
+
+                if (chunk.IsLast || uploadSession.ReceivedBytes >= uploadSession.FileSize)
+                {
+                    completed = true;
+                }
+            }
+
+            if (completed)
+            {
+                var roomPath = _roomFiles.GetRoomPath(uploadSession.RoomId);
+                Directory.CreateDirectory(roomPath);
+                var finalName = $"{uploadSession.TransferId}_{uploadSession.FileName}";
+                var finalPath = Path.Combine(roomPath, finalName);
+
+                try
+                {
+                    File.Move(uploadSession.TempPath, finalPath, overwrite: true);
+                }
+                catch
+                {
+                }
+
+                var descriptor = new RoomFileDescriptor
+                {
+                    FileId = uploadSession.TransferId,
+                    FileName = uploadSession.FileName,
+                    FileSize = uploadSession.FileSize,
+                    UploadedBy = uploadSession.Sender,
+                    UploadedAt = DateTime.Now.ToString("o")
+                };
+
+                _roomFiles.AddRoomFile(uploadSession.RoomId, descriptor);
+
+                lock (_uploadSessions)
+                {
+                    _uploadSessions.Remove(uploadSession.TransferId);
+                }
+
+                await BroadcastRoomFileListAsync(uploadSession.RoomId);
+                LogInfo($"[ROOM FILE] Uploaded {descriptor.FileName} ({descriptor.FileSize} bytes) to {uploadSession.RoomId}");
+            }
+        }
+
+        private async Task HandleRoomFileDownloadRequestAsync(ClientSession session, RoomFileDownloadRequestData request)
+        {
+            var roomId = string.IsNullOrWhiteSpace(request.RoomId) ? "General" : request.RoomId;
+            var file = _roomFiles.GetRoomFile(roomId, request.FileId);
+            if (file == null) return;
+
+            var roomPath = _roomFiles.GetRoomPath(roomId);
+            var filePath = Path.Combine(roomPath, $"{file.FileId}_{file.FileName}");
+            if (!File.Exists(filePath)) return;
+
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var offset = Math.Max(0, request.Offset);
+            if (offset > stream.Length) offset = stream.Length;
+            stream.Seek(offset, SeekOrigin.Begin);
+
+            var buffer = new byte[FileChunkSize];
+            long sentBytes = offset;
+
+            while (sentBytes < stream.Length)
+            {
+                int read = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                if (read <= 0) break;
+
+                var payload = Convert.ToBase64String(buffer, 0, read);
+                var isLast = sentBytes + read >= stream.Length;
+
+                await session.SendPacketAsync(new Packet
+                {
+                    Type = PacketType.RoomFileDownloadChunk,
+                    Data = JsonSerializer.SerializeToElement(new RoomFileDownloadChunkData
+                    {
+                        FileId = file.FileId,
+                        RoomId = roomId,
+                        Offset = sentBytes,
+                        DataBase64 = payload,
+                        IsLast = isLast,
+                        Descriptor = file
+                    })
+                });
+
+                sentBytes += read;
             }
         }
 
@@ -538,7 +1112,8 @@ namespace ChatServer
     class Program
     {
         private static readonly ConnectedClients _clients = new();
-        private static readonly MessageRouter _router = new(_clients);
+        private static readonly RoomFileStore _roomFiles = new(Path.Combine(AppContext.BaseDirectory, "room-files"));
+        private static readonly MessageRouter _router = new(_clients, _roomFiles);
         private static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(75);
         private static readonly TimeSpan HeartbeatCheckInterval = TimeSpan.FromSeconds(10);
 

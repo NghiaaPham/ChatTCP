@@ -216,6 +216,83 @@
             </Border>
         </DataTemplate>
 
+        <DataTemplate x:Key="TransferTemplate">
+            <Border Margin="0,0,0,8"
+                    Padding="12"
+                    Background="#CC20242A"
+                    BorderBrush="{StaticResource GlassBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="{Binding FileName}"
+                                   Foreground="{StaticResource BrightTextPrimary}"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"/>
+                        <TextBlock Text="{Binding StatusText}"
+                                   Foreground="{StaticResource BrightTextSecondary}"
+                                   FontSize="11"
+                                   Margin="0,2,0,6"/>
+                        <ProgressBar Minimum="0"
+                                     Maximum="100"
+                                     Height="6"
+                                     Value="{Binding ProgressPercent, Mode=OneWay}"
+                                     Foreground="{StaticResource LiquidAccent}"/>
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Content="Cancel"
+                            Margin="12,0,0,0"
+                            Padding="8,4"
+                            Style="{StaticResource FlatRowButtonStyle}"
+                            Command="{Binding DataContext.CancelFileTransferCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                            CommandParameter="{Binding TransferKey}"
+                            IsEnabled="{Binding CanCancel}"/>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="RoomFileTemplate">
+            <Border Margin="0,0,0,8"
+                    Padding="12"
+                    Background="#EEF6FF"
+                    BorderBrush="#D2E6FF"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="{Binding FileName}"
+                                   Foreground="#1E293B"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"/>
+                        <TextBlock Text="{Binding FileSizeLabel}"
+                                   Foreground="#475569"
+                                   FontSize="11"
+                                   Margin="0,2,0,0"/>
+                        <TextBlock Text="{Binding UploadedBy, StringFormat=By {0}}"
+                                   Foreground="#64748B"
+                                   FontSize="10"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Content="Download"
+                            Margin="12,0,0,0"
+                            Padding="8,4"
+                            Style="{StaticResource FlatRowButtonStyle}"
+                            Foreground="#0F172A"
+                            Command="{Binding DataContext.DownloadRoomFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                            CommandParameter="{Binding}"/>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
         <Storyboard x:Key="ExpandSidebar">
             <DoubleAnimation Storyboard.TargetProperty="Width"
                              To="240"
@@ -335,27 +412,38 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <ListBox x:Name="MessagesListBox"
-                     Grid.Row="0"
-                     ItemsSource="{Binding Messages}"
-                     Background="Transparent"
-                     BorderThickness="0"
-                     Padding="20,8,20,12"
-                     ScrollViewer.VerticalScrollBarVisibility="Auto"
-                     ScrollViewer.CanContentScroll="True"
-                     VirtualizingPanel.IsVirtualizing="True"
-                     VirtualizingPanel.VirtualizationMode="Recycling"
-                     VirtualizingPanel.CacheLength="1"
-                     VirtualizingPanel.CacheLengthUnit="Page"
-                     ItemContainerStyle="{StaticResource MessageItemContainerStyle}">
-                <ListBox.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <VirtualizingStackPanel/>
-                    </ItemsPanelTemplate>
-                </ListBox.ItemsPanel>
-                <ListBox.ItemTemplate>
-                    <DataTemplate>
-                        <Grid Margin="0,0,0,16" Opacity="0">
+            <Grid Grid.Row="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <ItemsControl Grid.Row="0"
+                              ItemsSource="{Binding Transfers}"
+                              ItemTemplate="{StaticResource TransferTemplate}"
+                              Margin="20,8,20,0"/>
+
+                <ListBox x:Name="MessagesListBox"
+                         Grid.Row="1"
+                         ItemsSource="{Binding Messages}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Padding="20,8,20,12"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         ScrollViewer.CanContentScroll="True"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         VirtualizingPanel.CacheLength="1"
+                         VirtualizingPanel.CacheLengthUnit="Page"
+                         ItemContainerStyle="{StaticResource MessageItemContainerStyle}">
+                    <ListBox.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel/>
+                        </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,16" Opacity="0">
                             <Grid.RenderTransform>
                                 <TranslateTransform Y="8"/>
                             </Grid.RenderTransform>
@@ -485,9 +573,10 @@
                                 </StackPanel>
                             </Border>
                         </Grid>
-                    </DataTemplate>
-                </ListBox.ItemTemplate>
-            </ListBox>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
 
             <ItemsControl Grid.Row="0"
                           ItemsSource="{Binding Toasts}"
@@ -574,6 +663,7 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <ui:TextBox Grid.Column="0"
@@ -606,7 +696,16 @@
                             <TextBlock Text="&#x2726;" FontSize="18"/>
                         </Button>
 
-                        <ui:Button Grid.Column="3"
+                        <Button Grid.Column="3"
+                                Style="{StaticResource ComposerIconButtonStyle}"
+                                Margin="0,0,8,0"
+                                ToolTip="Send file"
+                                Command="{Binding SendFileCommand}"
+                                IsEnabled="{Binding IsConnected}">
+                            <TextBlock Text="&#x1F4CE;" FontSize="16"/>
+                        </Button>
+
+                        <ui:Button Grid.Column="4"
                                    Content="Send"
                                    Command="{Binding SendMessageCommand}"
                                    Style="{StaticResource ModernButton}"
@@ -627,6 +726,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Text="{Binding OnlineHeader}" Foreground="{StaticResource BrightTextSecondary}" FontSize="11" FontWeight="Bold" Margin="16,20,16,10"/>
@@ -657,6 +757,18 @@
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
+
+                <StackPanel Grid.Row="2" Margin="12,0,12,12">
+                    <TextBlock Text="FILES"
+                               Foreground="{StaticResource BrightTextSecondary}"
+                               FontSize="11"
+                               FontWeight="Bold"
+                               Margin="4,8,0,6"/>
+                    <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding RoomFiles}"
+                                      ItemTemplate="{StaticResource RoomFileTemplate}"/>
+                    </ScrollViewer>
+                </StackPanel>
             </Grid>
         </Border>
 

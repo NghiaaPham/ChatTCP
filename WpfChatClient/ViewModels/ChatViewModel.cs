@@ -8,11 +8,13 @@ using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.Messaging;
+using Microsoft.Win32;
 using WpfChatClient.Models;
 using WpfChatClient.Core.Interfaces;
 using WpfChatClient.Infrastructure;
 using WpfChatClient.Messages;
 using WpfChatClient.Services;
+using WpfChatClient.Core.Models;
 
 namespace WpfChatClient.ViewModels;
 
@@ -29,6 +31,7 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
     private readonly Dictionary<string, RoomItem> _roomLookup = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<ChatMessage>> _roomMessages = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HashSet<string>> _roomMessageIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<RoomFileItem>> _roomFiles = new(StringComparer.OrdinalIgnoreCase);
     private bool _hasJoinedRooms;
     private bool _hasConnectedOnce;
 
@@ -67,6 +70,8 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
     public ObservableCollection<ToastNotification> Toasts { get; } = new();
     public ObservableCollection<RoomItem> Rooms { get; } = new();
     public ObservableCollection<StickerItem> Stickers { get; } = new();
+    public ObservableCollection<FileTransferItem> Transfers { get; } = new();
+    public ObservableCollection<RoomFileItem> RoomFiles { get; } = new();
 
     public ChatViewModel(IChatService chatService, MessageCache messageCache, IStickerService stickerService)
     {
@@ -84,6 +89,8 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
         _chatService.UserTyping += OnUserTyping;
         _chatService.ConnectionLost += OnConnectionLost;
         _chatService.ConnectionRestored += OnConnectionRestored;
+        _chatService.FileTransferUpdated += OnFileTransferUpdated;
+        _chatService.RoomFilesUpdated += OnRoomFilesUpdated;
 
         IsConnected = _chatService.IsConnected;
         if (IsConnected)
@@ -102,6 +109,7 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
 
         InitializeRooms();
         SelectedRoom = Rooms.FirstOrDefault(r => r.Id.Equals(CurrentRoomId, StringComparison.OrdinalIgnoreCase)) ?? Rooms.FirstOrDefault();
+        ShowRoomFiles(CurrentRoomId);
 
         WeakReferenceMessenger.Default.Register(this);
 
@@ -215,6 +223,7 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
         _typingUsers.Clear();
         UpdateTypingStatus();
         ShowRoomMessages(normalizedRoomId);
+        ShowRoomFiles(normalizedRoomId);
 
         if (_roomLookup.TryGetValue(normalizedRoomId, out var room))
         {
@@ -227,6 +236,18 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
         }
 
         await LoadRoomHistoryAsync(normalizedRoomId);
+    }
+
+    private void ShowRoomFiles(string roomId)
+    {
+        RoomFiles.Clear();
+        var normalizedRoomId = NormalizeRoomId(roomId);
+        if (!_roomFiles.TryGetValue(normalizedRoomId, out var files)) return;
+
+        foreach (var file in files)
+        {
+            RoomFiles.Add(file);
+        }
     }
 
     private ChatMessage CreateMessage(string sender, string time, string content, string messageId)
@@ -399,6 +420,93 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
         }
     }
 
+    private void OnRoomFilesUpdated(string roomId, IReadOnlyList<RoomFileDescriptor> files)
+    {
+        var normalizedRoomId = NormalizeRoomId(roomId);
+        var mapped = files
+            .Select(file => new RoomFileItem
+            {
+                FileId = file.FileId,
+                RoomId = normalizedRoomId,
+                FileName = file.FileName,
+                FileSize = file.FileSize,
+                UploadedBy = file.UploadedBy,
+                UploadedAt = file.UploadedAt
+            })
+            .ToList();
+
+        _roomFiles[normalizedRoomId] = mapped;
+
+        if (!string.Equals(normalizedRoomId, CurrentRoomId, StringComparison.OrdinalIgnoreCase)) return;
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher == null) return;
+
+        dispatcher.BeginInvoke(() =>
+        {
+            RoomFiles.Clear();
+            foreach (var item in mapped)
+            {
+                RoomFiles.Add(item);
+            }
+        });
+    }
+
+    private void OnFileTransferUpdated(FileTransferUpdate update)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher == null) return;
+
+        dispatcher.BeginInvoke(() =>
+        {
+            var existing = Transfers.FirstOrDefault(t => t.TransferKey == update.TransferKey);
+            if (existing == null)
+            {
+                existing = new FileTransferItem
+                {
+                    TransferKey = update.TransferKey,
+                    TransferId = update.TransferId,
+                    RoomId = update.RoomId,
+                    Peer = update.Peer,
+                    FileName = update.FileName,
+                    TotalBytes = update.TotalBytes,
+                    TransferredBytes = update.TransferredBytes,
+                    Direction = update.Direction,
+                    Status = update.Status
+                };
+                Transfers.Insert(0, existing);
+            }
+
+            existing.TransferredBytes = update.TransferredBytes;
+            existing.TotalBytes = update.TotalBytes;
+            existing.Status = update.Status;
+            existing.StatusText = BuildTransferStatusText(update);
+            existing.CanCancel = update.Status == FileTransferStatus.InProgress || update.Status == FileTransferStatus.Pending;
+
+            if (update.Direction == FileTransferDirection.Outgoing && update.Status == FileTransferStatus.Completed)
+            {
+                Transfers.Remove(existing);
+            }
+        });
+    }
+
+    private static string BuildTransferStatusText(FileTransferUpdate update)
+    {
+        return update.Status switch
+        {
+            FileTransferStatus.Pending => update.Direction == FileTransferDirection.Outgoing
+                ? "Waiting for receiver"
+                : "Waiting",
+            FileTransferStatus.InProgress => update.Direction == FileTransferDirection.Outgoing
+                ? $"Sending to {update.Peer}"
+                : $"Receiving from {update.Peer}",
+            FileTransferStatus.Completed => "Done",
+            FileTransferStatus.Canceled => "Canceled",
+            FileTransferStatus.Failed => "Failed",
+            _ => ""
+        };
+    }
+
     partial void OnMessageTextChanged(string value)
     {
         if (string.IsNullOrEmpty(value)) return;
@@ -567,6 +675,40 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
         {
             // Error handling
         }
+    }
+
+    [RelayCommand]
+    private async Task DownloadRoomFile(RoomFileItem? item)
+    {
+        if (item == null) return;
+        await _chatService.DownloadRoomFileAsync(item.RoomId, item.FileId, item.FileName);
+    }
+
+    [RelayCommand]
+    private async Task SendFile()
+    {
+        if (!_chatService.IsConnected) return;
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "Select a file to send",
+            CheckFileExists = true
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        var transferId = await _chatService.SendFileAsync(dialog.FileName, CurrentRoomId);
+        if (transferId == null)
+        {
+            OnMessageReceived("SYSTEM", DateTime.Now.ToString("HH:mm"), "File was not sent because the connection is not active.", Guid.NewGuid().ToString("N"), CurrentRoomId);
+        }
+    }
+
+    [RelayCommand]
+    private async Task CancelFileTransfer(string? transferKey)
+    {
+        if (string.IsNullOrWhiteSpace(transferKey)) return;
+        await _chatService.CancelFileTransferAsync(transferKey);
     }
 
     [RelayCommand]
@@ -744,6 +886,8 @@ public partial class ChatViewModel : ObservableObject, IDisposable, IRecipient<C
             _chatService.UserTyping -= OnUserTyping;
             _chatService.ConnectionLost -= OnConnectionLost;
             _chatService.ConnectionRestored -= OnConnectionRestored;
+            _chatService.FileTransferUpdated -= OnFileTransferUpdated;
+            _chatService.RoomFilesUpdated -= OnRoomFilesUpdated;
             WeakReferenceMessenger.Default.Unregister<ConnectionSuccessMessage>(this);
             _typingClearTimer.Stop();
             _disposed = true;

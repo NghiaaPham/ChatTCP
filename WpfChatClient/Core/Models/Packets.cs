@@ -16,7 +16,17 @@ public enum PacketType
     Heartbeat,
     PrivateMessage,
     RoomJoin,
-    ConnectionRejected
+    ConnectionRejected,
+    FileTransferRequest,
+    FileTransferChunk,
+    FileTransferResume,
+    FileTransferCancel,
+    RoomFileUploadRequest,
+    RoomFileUploadResume,
+    RoomFileUploadChunk,
+    RoomFileList,
+    RoomFileDownloadRequest,
+    RoomFileDownloadChunk
 }
 
 public class Packet
@@ -60,3 +70,98 @@ public class TypingData
 public class UserListUpdateData { public List<string> Users { get; set; } = new(); }
 public class SystemMessageData { public string Message { get; set; } = string.Empty; }
 public class HeartbeatData { }
+
+public class FileTransferRequestData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public string Sender { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+}
+
+public class FileTransferChunkData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public string Sender { get; set; } = string.Empty;
+    public string Recipient { get; set; } = string.Empty;
+    public long Offset { get; set; }
+    public string DataBase64 { get; set; } = string.Empty;
+    public bool IsLast { get; set; }
+}
+
+public class FileTransferResumeData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public string Sender { get; set; } = string.Empty;
+    public string Recipient { get; set; } = string.Empty;
+    public long ReceivedBytes { get; set; }
+}
+
+public class FileTransferCancelData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public string Sender { get; set; } = string.Empty;
+    public string Recipient { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+}
+
+public class RoomFileDescriptor
+{
+    public string FileId { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+    public string UploadedBy { get; set; } = string.Empty;
+    public string UploadedAt { get; set; } = string.Empty;
+}
+
+public class RoomFileListData
+{
+    public string RoomId { get; set; } = string.Empty;
+    public List<RoomFileDescriptor> Files { get; set; } = new();
+}
+
+public class RoomFileUploadRequestData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public string Sender { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+}
+
+public class RoomFileUploadResumeData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public long ReceivedBytes { get; set; }
+}
+
+public class RoomFileUploadChunkData
+{
+    public string TransferId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public long Offset { get; set; }
+    public string DataBase64 { get; set; } = string.Empty;
+    public bool IsLast { get; set; }
+}
+
+public class RoomFileDownloadRequestData
+{
+    public string FileId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public long Offset { get; set; }
+}
+
+public class RoomFileDownloadChunkData
+{
+    public string FileId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public long Offset { get; set; }
+    public string DataBase64 { get; set; } = string.Empty;
+    public bool IsLast { get; set; }
+    public RoomFileDescriptor Descriptor { get; set; } = new();
+}
